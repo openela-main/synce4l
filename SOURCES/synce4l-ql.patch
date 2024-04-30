@@ -1,0 +1,297 @@
+commit a59358afe10326096c0e4330d705457a65176bb8
+Author: Yochai Hagvi <yochai.hagvi@intel.com>
+Date:   Thu Nov 30 13:06:01 2023 +0200
+
+    synce4l: fix flows moving from best port to SMA
+    
+    When synce4l best source is changed from port and SMA, due to SMA QL
+    update, some flows found broken.
+    
+    on choose_best_source, when best source is changed, ibest_source should
+    be NULL since dev_update_ql uses the best_port for configuring
+    
+    on dev_step_line_input, when rebuild_prio is set, this case should be
+    hit
+    
+    (ML: backported to 1.0.0)
+    
+    Signed-off-by: Yochai Hagvi <yochai.hagvi@intel.com>
+
+diff --git a/synce_dev.c b/synce_dev.c
+index cd5c787..70936a6 100644
+--- a/synce_dev.c
++++ b/synce_dev.c
+@@ -525,6 +525,7 @@ static void choose_best_source(struct synce_dev *dev)
+ 				dev->name);
+ 		} else {
+ 			dev->ext_src_is_best = ext_src_is_best;
++			dev->best_source = NULL;
+ 			/* if input source is changing
+ 			 * current input is invalid, send DNU and wait
+ 			 * for EEC being locked in further dev_step
+@@ -555,14 +556,17 @@ static int dev_step_line_input(struct synce_dev *dev)
+ 
+ 	if (rx_ql_changed(dev)) {
+ 		choose_best_source(dev);
+-	} else if (dev->best_source && dev->best_source->type == PORT) {
+-		if (synce_port_rx_ql_failed(dev->best_source->port)) {
+-			synce_port_invalidate_rx_ql(dev->best_source->port);
+-			force_all_eecs_detach(dev);
+-			dev_update_ql(dev);
+-			dev->best_source = NULL;
+-			choose_best_source(dev);
+-		}
++	} else if (dev->best_source && dev->best_source->type == PORT &&
++		   synce_port_rx_ql_failed(dev->best_source->port)) {
++		synce_port_invalidate_rx_ql(dev->best_source->port);
++		force_all_eecs_detach(dev);
++		dev_update_ql(dev);
++		dev->best_source = NULL;
++		choose_best_source(dev);
++	} else if (dev->rebuild_prio) {
++		choose_best_source(dev);
++		dev_update_ql(dev);
++		dev->rebuild_prio = 0;
+ 	}
+ 
+ 	return ret;
+@@ -697,6 +701,7 @@ int synce_dev_init(struct synce_dev *dev, struct config *cfg)
+ 	dev->recover_time = config_get_int(cfg, dev->name, "recover_time");
+ 	dev->best_source = NULL;
+ 	dev->ext_src_is_best = false;
++	dev->rebuild_prio = 0;
+ 	eec_get_state_cmd = config_get_string(cfg, dev->name, "eec_get_state_cmd");
+ 	ess.holdover = config_get_string(cfg, dev->name, "eec_holdover_value");
+ 	ess.locked_ho = config_get_string(cfg, dev->name, "eec_locked_ho_value");
+
+commit 08914289b154ef4467929a84f1b2bf72591e8857
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Jan 8 16:56:38 2024 +0100
+
+    Update port TX QL when external source locks
+    
+    With multiple external sources, the transmitted QL was wrong if the best
+    source was not selected. When an external source locks, update the
+    forced QL of all ports to transmit the correct QL.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/synce_dev.c b/synce_dev.c
+index 70936a6..b8bfd0f 100644
+--- a/synce_dev.c
++++ b/synce_dev.c
+@@ -664,6 +664,10 @@ static int dev_step_dpll(struct synce_dev *dev)
+ 		dev->best_source = active;
+ 		pr_info("EEC_LOCKED/EEC_LOCKED_HO_ACQ on %s of %s",
+ 			dev->best_source->ext_src->name, dev->name);
++		LIST_FOREACH(c, &dev->clock_sources, list) {
++			if (c->type == PORT)
++				set_port_ql_from_ext_src(dev, c->port, active->ext_src);
++		}
+ 		dev_update_ql(dev);
+ 	} else if (active->type == PORT) {
+ 		dev->ext_src_is_best = 0;
+
+commit 0d6452efc885ec30547124b4c5570f4e6039ad69
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Jan 17 14:15:16 2024 +0100
+
+    Add functions for clearing priority of individual pins
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/dpll_mon.c b/dpll_mon.c
+index 0f0648c..14e5354 100644
+--- a/dpll_mon.c
++++ b/dpll_mon.c
+@@ -972,7 +972,7 @@ int set_prio(struct dpll_mon *dm, uint32_t pin_id, uint32_t prio)
+ 				    dm->dpll_id, prio);
+ }
+ 
+-static int dpll_mon_pin_prio_clear(struct dpll_mon *dm, struct dpll_mon_pin *pin)
++int dpll_mon_pin_prio_clear(struct dpll_mon *dm, struct dpll_mon_pin *pin)
+ {
+ 	struct dpll_mon_pin *parent;
+ 	struct parent_pin *pp;
+diff --git a/dpll_mon.h b/dpll_mon.h
+index ec6e8b4..481b5e3 100644
+--- a/dpll_mon.h
++++ b/dpll_mon.h
+@@ -119,6 +119,15 @@ int dpll_mon_pin_is_active(struct dpll_mon *dm, struct dpll_mon_pin *pin);
+ int dpll_mon_pin_prio_set(struct dpll_mon *dm, struct dpll_mon_pin *pin,
+ 			  uint32_t prio);
+ 
++/**
++ * Request to reset the priority of a pin to dnu_prio.
++ *
++ * @param dm		Instance of dpll mon which owns the pin.
++ * @param pin		Valid pointer to a pin.
++ * @return		0 - success, negative - failed to send request
++ */
++int dpll_mon_pin_prio_clear(struct dpll_mon *dm, struct dpll_mon_pin *pin);
++
+ /**
+  * Request to set Do Not Use priority on all valid pins for all the pins
+  * controlled by the dpll_mon's dpll.
+diff --git a/synce_clock_source.c b/synce_clock_source.c
+index 16ba091..50b21b8 100644
+--- a/synce_clock_source.c
++++ b/synce_clock_source.c
+@@ -220,3 +220,18 @@ int synce_clock_source_prio_set(struct dpll_mon *dpll_mon,
+ 					   prio);
+ 	return synce_ext_src_prio_set(dpll_mon, clk_src->ext_src, prio);
+ }
++
++int synce_clock_source_prio_clear(struct dpll_mon *dpll_mon,
++				  struct synce_clock_source *clk_src)
++{
++	if (!clk_src) {
++		pr_err("%s clock_source is NULL", __func__);
++		return -ENODEV;
++	}
++	pr_debug("%s: clear prio on %s", __func__,
++		 clk_src->type == PORT ? clk_src->port->name :
++		 clk_src->ext_src->name);
++	if (clk_src->type == PORT)
++		return synce_port_prio_clear(dpll_mon, clk_src->port);
++	return synce_ext_src_prio_clear(dpll_mon, clk_src->ext_src);
++}
+diff --git a/synce_clock_source.h b/synce_clock_source.h
+index 80c1327..96e6d26 100644
+--- a/synce_clock_source.h
++++ b/synce_clock_source.h
+@@ -132,4 +132,14 @@ int synce_clock_source_prio_set(struct dpll_mon *dpll_mon,
+ 				struct synce_clock_source *clk_src,
+ 				uint32_t prio);
+ 
++/**
++ * request to set priority of a clock source pin on a dpll to dnu_prio
++ *
++ * @param dpll_mon	Pointer to dpll_mon class
++ * @param clk_src	Configured instance
++ * @return		0 - success, error code - failure
++ */
++int synce_clock_source_prio_clear(struct dpll_mon *dpll_mon,
++				  struct synce_clock_source *clk_src);
++
+ #endif /* HAVE_SYNCE_CLOCK_SOURCE_H */
+diff --git a/synce_ext_src.c b/synce_ext_src.c
+index 7d0debd..d5c94f5 100644
+--- a/synce_ext_src.c
++++ b/synce_ext_src.c
+@@ -204,3 +204,9 @@ int synce_ext_src_prio_set(struct dpll_mon *dpll_mon,
+ {
+ 	return dpll_mon_pin_prio_set(dpll_mon, ext_src->pin, prio);
+ }
++
++int synce_ext_src_prio_clear(struct dpll_mon *dpll_mon,
++			     struct synce_ext_src *ext_src)
++{
++	return dpll_mon_pin_prio_clear(dpll_mon, ext_src->pin);
++}
+diff --git a/synce_ext_src.h b/synce_ext_src.h
+index 79e6773..972c254 100644
+--- a/synce_ext_src.h
++++ b/synce_ext_src.h
+@@ -128,4 +128,14 @@ int synce_ext_src_is_active(struct dpll_mon *dpll_mon,
+ int synce_ext_src_prio_set(struct dpll_mon *dpll_mon,
+ 			   struct synce_ext_src *ext_src, uint32_t prio);
+ 
++/**
++ * request to set priority of a external source associated pin to dnu_prio
++ *
++ * @param dpll_mon	Pointer to dpll_mon class
++ * @param ext_src	Configured instance
++ * @return		0 - success, error code - failure
++ */
++int synce_ext_src_prio_clear(struct dpll_mon *dpll_mon,
++			     struct synce_ext_src *ext_src);
++
+ #endif /* HAVE_SYNCE_EXT_SRC_H */
+diff --git a/synce_port.c b/synce_port.c
+index 93bcee0..93a9f9f 100644
+--- a/synce_port.c
++++ b/synce_port.c
+@@ -473,3 +473,8 @@ int synce_port_prio_set(struct dpll_mon *dpll_mon, struct synce_port *port,
+ {
+ 	return dpll_mon_pin_prio_set(dpll_mon, port->pin, prio);
+ }
++
++int synce_port_prio_clear(struct dpll_mon *dpll_mon, struct synce_port *port)
++{
++	return dpll_mon_pin_prio_clear(dpll_mon, port->pin);
++}
+diff --git a/synce_port.h b/synce_port.h
+index 6f08976..ce07101 100644
+--- a/synce_port.h
++++ b/synce_port.h
+@@ -192,4 +192,13 @@ int synce_port_is_active(struct dpll_mon *dpll_mon, struct synce_port *port);
+ int synce_port_prio_set(struct dpll_mon *dpll_mon, struct synce_port *port,
+ 			uint32_t prio);
+ 
++/**
++ * request to set priority of a port pin on a dpll to dnu_prio
++ *
++ * @param dpll_mon	Pointer to dpll_mon class
++ * @param port		Configured instance
++ * @return		0 - success, error code - failure
++ */
++int synce_port_prio_clear(struct dpll_mon *dpll_mon, struct synce_port *port);
++
+ #endif /* HAVE_SYNCE_PORT_H */
+
+commit 977f85ac74720996733c9ecce3cd2cd545a357de
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Jan 17 14:16:07 2024 +0100
+
+    Avoid disconnecting input when rebuilding priority
+    
+    When rebuilding the input priority (e.g. after a change in the received
+    QL), avoid temporarily clearing the priority (setting to DNU) of inputs
+    that will still be usable for synchronization.
+    
+    This avoids an unnecessary disconnect of the currently locked input
+    causing a change in the transmitted QL and possibly an infinite loop in
+    the selection of inputs if the downstream SyncE clock is selecting this
+    clock as its input.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/synce_dev.c b/synce_dev.c
+index b8bfd0f..7800508 100644
+--- a/synce_dev.c
++++ b/synce_dev.c
+@@ -577,13 +577,14 @@ int rebuild_inputs_prio(struct synce_dev *dev)
+ 	struct synce_clock_source *tmp, *tmp_best, **arr, *best, *prev_tmp = NULL;
+ 	int i = 0, prio_count;
+ 
+-	if (dpll_mon_pins_prio_dnu_set(dev->dpll_mon)) {
+-		pr_err("failed to set DNU priorities on %s", dev->name);
+-		return -EIO;
+-	}
+ 	best = find_dev_best_clock_source(dev);
+-	if (!best)
++	if (!best) {
++		if (dpll_mon_pins_prio_dnu_set(dev->dpll_mon)) {
++			pr_err("failed to set DNU priorities on %s", dev->name);
++			return -EIO;
++		}
+ 		return 0;
++	}
+ 	arr = calloc(dev->num_clock_sources, sizeof(*arr));
+ 	if (!arr)
+ 		return -ENOMEM;
+@@ -620,6 +621,13 @@ int rebuild_inputs_prio(struct synce_dev *dev)
+ 	}
+ 	prio_count = i;
+ 	pr_debug("considered valid clock sources num: %d on %s", i, dev->name);
++	LIST_FOREACH(tmp, &dev->clock_sources, list) {
++		for (i = 0; i < prio_count; i++)
++			if (tmp == arr[i])
++				break;
++		if (i == prio_count)
++			synce_clock_source_prio_clear(dev->dpll_mon, tmp);
++	}
+ 	for (i = 0; i < prio_count; i++)
+ 		synce_clock_source_prio_set(dev->dpll_mon, arr[i], i);
+ 	free(arr);

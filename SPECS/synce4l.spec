@@ -1,19 +1,22 @@
-%global gitver 9564b5589d72ed3571a1f2130204aea60683bd78
-%global gitrel %(c=%{gitver}; echo ${c:0:6})
-%global gitdate 20221122
-
 Name:		synce4l
-Version:	0
-Release:	4.%{gitdate}git%{gitrel}%{?dist}
+Version:	1.0.0
+Release:	1%{?dist}
 Summary:	SyncE implementation for Linux
 
 License:	GPL-2.0-or-later
 URL:		https://github.com/intel/synce4l
-Source0:	https://github.com/intel/synce4l/archive/%{gitrel}/synce4l-%{gitrel}.tar.gz
+Source0:	https://github.com/intel/synce4l/archive/%{version}/synce4l-%{version}.tar.gz
 Source1:	synce4l.service
-Source2:	synce4l.conf
+
+# Fix building on 32-bit archs
+Patch1:		synce4l-32bit.patch
+# Fix false compiler warning
+Patch2:		synce4l-uninit-warning.patch
+# Fix various issues in handling of changes in received/transmitted QL
+Patch3:		synce4l-ql.patch
 
 BuildRequires:	gcc make systemd
+BuildRequires:	libnl3-devel
 
 %{?systemd_requires}
 
@@ -25,7 +28,14 @@ supported hardware by processing Ethernet Synchronization Messaging Channel
 (NIC).
 
 %prep
-%setup -q -n synce4l-%{gitver}
+%autosetup
+
+sed \
+	-e 's|^\(logging_level	*\)[0-7]|\16|' \
+	-e 's|^\(use_syslog	*\)[01]|\11|' \
+	-e 's|^\(verbose	*\)[01]|\10|' \
+	< configs/synce4l_dpll.cfg > synce4l.conf
+touch -r configs/synce4l_dpll.cfg synce4l.conf
 
 %build
 %{make_build} \
@@ -38,7 +48,7 @@ supported hardware by processing Ethernet Synchronization Messaging Channel
 
 mkdir -p $RPM_BUILD_ROOT{%{_sysconfdir},%{_unitdir},%{_mandir}/man5}
 install -m 644 -p %{SOURCE1} $RPM_BUILD_ROOT%{_unitdir}
-install -m 644 -p %{SOURCE2} $RPM_BUILD_ROOT%{_sysconfdir}
+install -m 644 -p synce4l.conf $RPM_BUILD_ROOT%{_sysconfdir}
 
 echo '.so man8/synce4l.8' > $RPM_BUILD_ROOT%{_mandir}/man5/synce4l.conf.5
 
@@ -64,6 +74,9 @@ echo '.so man8/synce4l.8' > $RPM_BUILD_ROOT%{_mandir}/man5/synce4l.conf.5
 %{_mandir}/man8/*.8*
 
 %changelog
+* Mon Feb 19 2024 Miroslav Lichvar <mlichvar@redhat.com> 1.0.0-1
+- update to 1.0.0 (RHEL-10089 RHEL-1645 RHEL-17948 RHEL-17949)
+
 * Tue Jan 03 2023 Miroslav Lichvar <mlichvar@redhat.com> 0-4.20221122git9564b5
 - update to 20221122git9564b5 (#2143264)
 
