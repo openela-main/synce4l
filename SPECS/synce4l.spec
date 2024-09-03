@@ -1,6 +1,6 @@
 Name:		synce4l
-Version:	1.0.0
-Release:	1%{?dist}
+Version:	1.1.0
+Release:	2%{?dist}
 Summary:	SyncE implementation for Linux
 
 License:	GPL-2.0-or-later
@@ -8,12 +8,16 @@ URL:		https://github.com/intel/synce4l
 Source0:	https://github.com/intel/synce4l/archive/%{version}/synce4l-%{version}.tar.gz
 Source1:	synce4l.service
 
-# Fix building on 32-bit archs
-Patch1:		synce4l-32bit.patch
-# Fix false compiler warning
-Patch2:		synce4l-uninit-warning.patch
-# Fix various issues in handling of changes in received/transmitted QL
-Patch3:		synce4l-ql.patch
+# Fix compiler warnings to avoid build failures with -Werror
+Patch1:		synce4l-ccwarns.patch
+# Change default smc socket path and remove existing socket on start
+Patch2:		synce4l-smc.patch
+# Fix crash observed with newer E810 firmware
+Patch3:		synce4l-noduppin.patch
+# Fix initial pin ID to not match an existing pin
+Patch4:		synce4l-initpinid.patch
+# Fix requested thread stack size on aarch64
+Patch5:		synce4l-stacksize.patch
 
 BuildRequires:	gcc make systemd
 BuildRequires:	libnl3-devel
@@ -28,7 +32,7 @@ supported hardware by processing Ethernet Synchronization Messaging Channel
 (NIC).
 
 %prep
-%autosetup
+%autosetup -p1
 
 sed \
 	-e 's|^\(logging_level	*\)[0-7]|\16|' \
@@ -74,6 +78,12 @@ echo '.so man8/synce4l.8' > $RPM_BUILD_ROOT%{_mandir}/man5/synce4l.conf.5
 %{_mandir}/man8/*.8*
 
 %changelog
+* Tue Aug 13 2024 Miroslav Lichvar <mlichvar@redhat.com> 1.1.0-2
+- fix requested thread stack size on aarch64 (RHEL-54121)
+
+* Wed Aug 07 2024 Miroslav Lichvar <mlichvar@redhat.com> 1.1.0-1
+- update to 1.1.0 (RHEL-52089 RHEL-52090 RHEL-52091 RHEL-52197)
+
 * Mon Feb 19 2024 Miroslav Lichvar <mlichvar@redhat.com> 1.0.0-1
 - update to 1.0.0 (RHEL-10089 RHEL-1645 RHEL-17948 RHEL-17949)
 
