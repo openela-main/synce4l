@@ -1,0 +1,26 @@
+commit f134a38219fc390405f488d5eaaa64e7957b29f3
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Aug 13 12:19:24 2024 +0200
+
+    Fix requested thread stack size
+    
+    The pthread_attr_setstacksize() call requesting size of 0xffff fails on
+    systems with 64k pages. Request the maximum of 0xffff and
+    PTHREAD_STACK_MIN instead.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/synce_thread_common.h b/synce_thread_common.h
+index cf607ac..8db11d7 100644
+--- a/synce_thread_common.h
++++ b/synce_thread_common.h
+@@ -13,7 +13,8 @@
+ #define MSEC_TO_USEC(X)			(X * 1000)
+ #define THREAD_STOP_SLEEP_USEC		MSEC_TO_USEC(50)
+ #define THREAD_START_SLEEP_USEC		MSEC_TO_USEC(20)
+-#define SYNCE_THREAD_STACK_SIZE		0xffff
++#define SYNCE_THREAD_STACK_SIZE		(0xffff > PTHREAD_STACK_MIN ? \
++					 0xffff : PTHREAD_STACK_MIN)
+ #define TASK_COMM_LEN			16
+ 
+ #endif /* HAVE_SYNCE_THREAD_COMMON_H */

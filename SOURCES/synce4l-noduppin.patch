@@ -1,0 +1,43 @@
+commit 11319e050cde0657395d2656e2be4a629b53fb3b
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Aug 5 16:20:49 2024 +0200
+
+    Fix crash in dpll_rt_recv()
+    
+    A crash was observed with E810 firmware 4.50 and kernel 6.11-rc1 in
+    dpll_rt_recv() trying to assign pin id to the pin which was removed by
+    remove_no_ifname_pin(). The pin is not a duplicate.
+    
+    Add a third parameter to remove_no_ifname_pin() to avoid removing the
+    incorrect pin.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/dpll_mon.c b/dpll_mon.c
+index 06b4bce..39659fe 100644
+--- a/dpll_mon.c
++++ b/dpll_mon.c
+@@ -256,12 +256,12 @@ static void pin_destroy(struct dpll_mon_pin *pin)
+ 	free(pin);
+ }
+ 
+-void remove_no_ifname_pin(struct dpll_mon *dm, uint32_t pin_id)
++void remove_no_ifname_pin(struct dpll_mon *dm, uint32_t pin_id, struct dpll_mon_pin *except)
+ {
+ 	struct dpll_mon_pin *pin;
+ 
+ 	STAILQ_FOREACH(pin, &dm->pins, list)
+-		if (pin && pin_id == pin->id && pin->ifname == NULL) {
++		if (pin && pin != except && pin_id == pin->id && pin->ifname == NULL) {
+ 			pr_debug_pin("removed duplicated pin", pin);
+ 			STAILQ_REMOVE(&dm->pins, pin, dpll_mon_pin, list);
+ 			pin_destroy(pin);
+@@ -589,7 +589,7 @@ static int dpll_rt_recv(struct nl_msg *msg, void *arg)
+ 		goto unlock;
+ 	pin_id = nla_get_u32(an[DPLL_A_PIN_ID]);
+ 	if (pin) {
+-		remove_no_ifname_pin(dm, pin_id);
++		remove_no_ifname_pin(dm, pin_id, pin);
+ 		pin->id = pin_id;
+ 		pr_debug_pin("pin assigned id", pin);
+ 	} else {

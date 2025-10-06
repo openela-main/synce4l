@@ -1,0 +1,133 @@
+commit 6edb7f5a974c8a80f68c7b82b1bde1c1b37b75bb
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Jun 5 12:55:29 2024 +0200
+
+    Change default smc_socket_path to /run/synce4l_socket
+    
+    System services should use /run for sockets and other runtime files.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/README.md b/README.md
+index 87623a9..c1c1d73 100644
+--- a/README.md
++++ b/README.md
+@@ -125,7 +125,7 @@ related to a running synce4l instance.
+ | `logging_level`      | `6`                   | `0-7`        | Minimum log level required to appear in a log.                  |
+ | `message_tag`        | None                  | string       | Tag reported in a log.                                          |
+ | `poll_interval_msec` | 20                    | 0-500        | Sleep time between subsequent SyncE clock polls                 |
+-| `smc_socket_path`    | `/tmp/synce4l_socket` | string       | Full path to socket file for external application communication |
++| `smc_socket_path`    | `/run/synce4l_socket` | string       | Full path to socket file for external application communication |
+ | `use_syslog`         | `1`                   | `0`, `1`     | Set to 1 if `syslog` should be used.                            |
+ | `verbose`            | `0`                   | `0`, `1`     | Set to 1 to log extra information.                              |
+ 
+@@ -200,7 +200,7 @@ logging_level              7
+ use_syslog                 0
+ verbose                    1
+ message_tag                [synce4l]
+-smc_socket_path            /tmp/synce4l_socket
++smc_socket_path            /run/synce4l_socket
+ 
+ [<synce1>]
+ network_option             1
+@@ -239,7 +239,7 @@ logging_level              7
+ use_syslog                 0
+ verbose                    1
+ message_tag                [synce4l]
+-smc_socket_path            /tmp/synce4l_socket
++smc_socket_path            /run/synce4l_socket
+ 
+ [<synce1>]
+ network_option             1
+diff --git a/config.c b/config.c
+index bb438a6..274c2d3 100644
+--- a/config.c
++++ b/config.c
+@@ -180,7 +180,7 @@ struct config_item config_tab_synce[] = {
+ 	GLOB_ITEM_STR("message_tag", NULL),
+ 	GLOB_ITEM_INT("poll_interval_msec", 20, CLOCK_POLL_INTERVAL_MIN,
+ 		      CLOCK_POLL_INTERVAL_MAX),
+-	GLOB_ITEM_STR("smc_socket_path", "/tmp/synce4l_socket"),
++	GLOB_ITEM_STR("smc_socket_path", "/run/synce4l_socket"),
+ 	GLOB_ITEM_INT("use_syslog", 1, 0, 1),
+ 	GLOB_ITEM_STR("userDescription", ""),
+ 	GLOB_ITEM_INT("verbose", 0, 0, 1),
+diff --git a/configs/synce4l.cfg b/configs/synce4l.cfg
+index ca12e9f..de92bd1 100644
+--- a/configs/synce4l.cfg
++++ b/configs/synce4l.cfg
+@@ -7,7 +7,7 @@ logging_level		7
+ use_syslog		0
+ verbose			1
+ message_tag		[synce4l]
+-smc_socket_path		/tmp/synce4l_socket
++smc_socket_path		/run/synce4l_socket
+ 
+ 
+ #
+diff --git a/configs/synce4l_dpll.cfg b/configs/synce4l_dpll.cfg
+index b814266..db4bd88 100644
+--- a/configs/synce4l_dpll.cfg
++++ b/configs/synce4l_dpll.cfg
+@@ -7,7 +7,7 @@ logging_level		6
+ use_syslog		0
+ verbose			1
+ message_tag		[synce4l]
+-smc_socket_path		/tmp/synce4l_socket
++smc_socket_path		/run/synce4l_socket
+ 
+ 
+ #
+
+commit 2f50c7a8b98d99220108abb0163696dcfed77635
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Jun 5 13:05:18 2024 +0200
+
+    Check smc_socket_path length
+    
+    Exit with an error message if the configured socket path is too long to
+    be bound as a Unix domain socket.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/synce_manager.c b/synce_manager.c
+index 598ef7e..a42b823 100644
+--- a/synce_manager.c
++++ b/synce_manager.c
+@@ -256,6 +256,10 @@ static void *synce_manager_server_thread(void *arg)
+ 		exit(EXIT_FAILURE);
+ 	}
+ 
++	if (strlen(synce_clock_get_socket_path(clk)) >= sizeof(server.sun_path)) {
++		pr_err("%s smc_socket_path is too long", __func__);
++		exit(EXIT_FAILURE);
++	}
+ 	server.sun_family = AF_UNIX;
+ 	snprintf(server.sun_path, sizeof(server.sun_path), "%s",
+ 		 synce_clock_get_socket_path(clk));
+
+commit b5a9ad4f0aa1fb98e4ac060c91a08d82fe66e7d2
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Jun 5 13:07:04 2024 +0200
+
+    Unlink smc_socket_path before binding
+    
+    Remove the Unix domain socket if it already exists (e.g. previous
+    synce4l instance didn't exit cleanly) to avoid failing in the bind()
+    call.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/synce_manager.c b/synce_manager.c
+index a42b823..6baf18c 100644
+--- a/synce_manager.c
++++ b/synce_manager.c
+@@ -264,6 +264,8 @@ static void *synce_manager_server_thread(void *arg)
+ 	snprintf(server.sun_path, sizeof(server.sun_path), "%s",
+ 		 synce_clock_get_socket_path(clk));
+ 
++	unlink(server.sun_path);
++
+ 	if (bind(server_fd, (struct sockaddr *)&server, sizeof(server)) < 0) {
+ 		pr_err("%s Bind failed", __func__);
+ 		exit(EXIT_FAILURE);

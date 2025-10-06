@@ -1,0 +1,24 @@
+commit b61dd54c1015692785a1766b15f7f5914f68df70
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Aug 7 14:14:32 2024 +0200
+
+    Initialize pin ID to -1
+    
+    When creating the pin structure, initialize the pin ID to -1 to avoid
+    matching an existing pin with ID 0 (e.g. CVL-SDP22 on E810) when a
+    nonexistent pin is specified in the config.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/dpll_mon.c b/dpll_mon.c
+index 39659fe..36aa559 100644
+--- a/dpll_mon.c
++++ b/dpll_mon.c
+@@ -240,6 +240,7 @@ static struct dpll_mon_pin *pin_create(void)
+ 	}
+ 	pr_debug("%s %p", __func__, pin);
+ 	pin->parent_used_by = PARENT_NOT_USED;
++	pin->id = -1;
+ 	STAILQ_INIT(&pin->parents);
+ 
+ 	return pin;
